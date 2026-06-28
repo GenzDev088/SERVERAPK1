@@ -24,72 +24,76 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.22.0'
+          flutter-version: '3.8.1'  # ✅ FIX: Sesuaikan dengan pubspec.yaml kamu
           channel: 'stable'
 
       - name: Download ZIP
         run: |
           echo "Downloading from: ${{ github.event.inputs.zip_url }}"
-          
-          # Coba download langsung (browser_download_url)
           curl -L -o project.zip "${{ github.event.inputs.zip_url }}"
           
-          # Cek apakah valid ZIP
           if ! unzip -t project.zip > /dev/null 2>&1; then
-            echo "❌ ZIP invalid dengan URL langsung, coba pakai API..."
-            echo "File content:"
-            file project.zip
-            head -c 200 project.zip
-            
-            # Extract asset ID dari URL API
-            ASSET_URL="${{ github.event.inputs.zip_url }}"
-            
-            # Coba dengan header Accept: application/octet-stream
+            echo "❌ ZIP invalid, coba dengan API header..."
             curl -L \
               -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
               -H "Accept: application/octet-stream" \
               -o project.zip \
-              "$ASSET_URL"
+              "${{ github.event.inputs.zip_url }}"
           fi
           
-          # Verifikasi final
           if ! unzip -t project.zip > /dev/null 2>&1; then
-            echo "❌ ZIP masih invalid setelah semua percobaan!"
-            echo "File info:"
+            echo "❌ ZIP masih invalid!"
             ls -la project.zip
             file project.zip
-            echo "First 500 bytes:"
             head -c 500 project.zip
             exit 1
           fi
-          
-          echo "✅ ZIP valid! Size:"
-          ls -la project.zip
+          echo "✅ ZIP valid!"
 
       - name: Extract ZIP
         run: |
-          unzip project.zip -d project/
+          # ✅ FIX: Extract ke project/ dan simpan full path
+          unzip -q project.zip -d project/
           cd project
-          # Cari folder root project (kadang ada subfolder)
-          ROOT_DIR=$(find . -name "pubspec.yaml" -not -path "*/.*" | head -1 | xargs dirname)
-          if [ -z "$ROOT_DIR" ]; then
+          
+          echo "Isi folder setelah extract:"
+          ls -la
+          
+          # Cari pubspec.yaml
+          PUBSPEC=$(find . -name "pubspec.yaml" -not -path "*/.*" | head -1)
+          if [ -z "$PUBSPEC" ]; then
             echo "❌ pubspec.yaml tidak ditemukan!"
-            echo "Isi folder:"
-            ls -la
             find . -maxdepth 3 -type f
             exit 1
           fi
-          echo "PROJECT_ROOT=$ROOT_DIR" >> $GITHUB_ENV
-          echo "✅ Project root: $ROOT_DIR"
+          
+          echo "Found pubspec.yaml at: $PUBSPEC"
+          
+          # ✅ FIX: Ambil folder parent dari pubspec.yaml
+          ROOT_DIR=$(dirname "$PUBSPEC")
+          
+          # Convert ke absolute path
+          if [ "$ROOT_DIR" = "." ]; then
+            FULL_ROOT="$PWD"
+          else
+            FULL_ROOT="$PWD/$ROOT_DIR"
+          fi
+          
+          # ✅ FIX: Export ke GITHUB_ENV
+          echo "PROJECT_ROOT=$FULL_ROOT" >> $GITHUB_ENV
+          echo "✅ Project root: $FULL_ROOT"
+          echo "✅ Isi project:"
+          ls -la "$FULL_ROOT"
 
       - name: Install Dependencies
         run: |
-          cd ${{ env.PROJECT_ROOT }}
+          echo "PROJECT_ROOT: ${{ env.PROJECT_ROOT }}"
+          cd "${{ env.PROJECT_ROOT }}"
           flutter pub get
 
       - name: Build APK
         run: |
-          cd ${{ env.PROJECT_ROOT }}
+          cd "${{ env.PROJECT_ROOT }}"
           if [ "${{ github.event.inputs.build_type }}" == "debug" ]; then
             flutter build apk --debug
           else
