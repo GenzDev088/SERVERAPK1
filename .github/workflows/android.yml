@@ -32,16 +32,57 @@ jobs:
 
       - name: Download ZIP
         run: |
-          curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            "${{ github.event.inputs.zip_url }}" -o project.zip
+          echo "Downloading from: ${{ github.event.inputs.zip_url }}"
+          
+          # Coba download langsung
+          curl -L -o project.zip "${{ github.event.inputs.zip_url }}"
+          
+          # Cek validitas ZIP
+          if ! unzip -t project.zip > /dev/null 2>&1; then
+            echo "❌ ZIP invalid, coba dengan API header..."
+            curl -L \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/octet-stream" \
+              -o project.zip \
+              "${{ github.event.inputs.zip_url }}"
+          fi
+          
+          # Verifikasi
+          if ! unzip -t project.zip > /dev/null 2>&1; then
+            echo "❌ ZIP masih invalid!"
+            ls -la project.zip
+            file project.zip
+            head -c 500 project.zip
+            exit 1
+          fi
+          
+          echo "✅ ZIP valid!"
 
-      - name: Extract & Build
+      - name: Extract & Find Project
         run: |
           unzip project.zip -d project/
           cd project
-          # Cari build.gradle
+          # Cari build.gradle atau build.gradle.kts
           ROOT_DIR=$(find . -name "build.gradle*" -not -path "*/.*" | head -1 | xargs dirname)
+          if [ -z "$ROOT_DIR" ]; then
+            echo "❌ build.gradle tidak ditemukan!"
+            ls -la
+            find . -maxdepth 3 -name "*.gradle*"
+            exit 1
+          fi
           echo "PROJECT_ROOT=$ROOT_DIR" >> $GITHUB_ENV
+          echo "✅ Project root: $ROOT_DIR"
+
+      - name: Make gradlew executable
+        run: |
+          cd ${{ env.PROJECT_ROOT }}
+          if [ -f "gradlew" ]; then
+            chmod +x gradlew
+          else
+            echo "❌ gradlew tidak ditemukan!"
+            find . -name "gradlew"
+            exit 1
+          fi
 
       - name: Build APK
         run: |
