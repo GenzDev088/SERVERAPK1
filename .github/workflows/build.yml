@@ -24,13 +24,47 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.22.0'  # Sesuaikan versi Flutter
+          flutter-version: '3.22.0'
           channel: 'stable'
 
       - name: Download ZIP
         run: |
-          curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-            "${{ github.event.inputs.zip_url }}" -o project.zip
+          echo "Downloading from: ${{ github.event.inputs.zip_url }}"
+          
+          # Coba download langsung (browser_download_url)
+          curl -L -o project.zip "${{ github.event.inputs.zip_url }}"
+          
+          # Cek apakah valid ZIP
+          if ! unzip -t project.zip > /dev/null 2>&1; then
+            echo "❌ ZIP invalid dengan URL langsung, coba pakai API..."
+            echo "File content:"
+            file project.zip
+            head -c 200 project.zip
+            
+            # Extract asset ID dari URL API
+            ASSET_URL="${{ github.event.inputs.zip_url }}"
+            
+            # Coba dengan header Accept: application/octet-stream
+            curl -L \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/octet-stream" \
+              -o project.zip \
+              "$ASSET_URL"
+          fi
+          
+          # Verifikasi final
+          if ! unzip -t project.zip > /dev/null 2>&1; then
+            echo "❌ ZIP masih invalid setelah semua percobaan!"
+            echo "File info:"
+            ls -la project.zip
+            file project.zip
+            echo "First 500 bytes:"
+            head -c 500 project.zip
+            exit 1
+          fi
+          
+          echo "✅ ZIP valid! Size:"
+          ls -la project.zip
 
       - name: Extract ZIP
         run: |
@@ -38,7 +72,15 @@ jobs:
           cd project
           # Cari folder root project (kadang ada subfolder)
           ROOT_DIR=$(find . -name "pubspec.yaml" -not -path "*/.*" | head -1 | xargs dirname)
+          if [ -z "$ROOT_DIR" ]; then
+            echo "❌ pubspec.yaml tidak ditemukan!"
+            echo "Isi folder:"
+            ls -la
+            find . -maxdepth 3 -type f
+            exit 1
+          fi
           echo "PROJECT_ROOT=$ROOT_DIR" >> $GITHUB_ENV
+          echo "✅ Project root: $ROOT_DIR"
 
       - name: Install Dependencies
         run: |
