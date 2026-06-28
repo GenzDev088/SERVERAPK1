@@ -4,54 +4,58 @@ on:
   workflow_dispatch:
     inputs:
       zip_url:
-        description: 'URL ZIP Project'
+        description: 'URL ZIP file dari GitHub Release'
         required: true
       tag:
-        description: 'Tag Build'
+        description: 'Release tag'
         required: true
       build_type:
-        description: 'Build Type'
+        description: 'Build type (debug/release)'
         required: true
         default: 'release'
-        type: choice
-        options:
-          - debug
-          - release
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download Project ZIP
-        run: |
-          curl -L -o project.zip "${{ inputs.zip_url }}"
-          unzip -q project.zip -d ./project
-
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.x'
-          channel: stable
+          flutter-version: '3.22.0'  # Sesuaikan versi Flutter
+          channel: 'stable'
 
-      - name: Get Dependencies
-        working-directory: ./project
-        run: flutter pub get
+      - name: Download ZIP
+        run: |
+          curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "${{ github.event.inputs.zip_url }}" -o project.zip
+
+      - name: Extract ZIP
+        run: |
+          unzip project.zip -d project/
+          cd project
+          # Cari folder root project (kadang ada subfolder)
+          ROOT_DIR=$(find . -name "pubspec.yaml" -not -path "*/.*" | head -1 | xargs dirname)
+          echo "PROJECT_ROOT=$ROOT_DIR" >> $GITHUB_ENV
+
+      - name: Install Dependencies
+        run: |
+          cd ${{ env.PROJECT_ROOT }}
+          flutter pub get
 
       - name: Build APK
-        working-directory: ./project
         run: |
-          if [ "${{ inputs.build_type }}" = "debug" ]; then
+          cd ${{ env.PROJECT_ROOT }}
+          if [ "${{ github.event.inputs.build_type }}" == "debug" ]; then
             flutter build apk --debug
           else
             flutter build apk --release
           fi
 
-      - name: Upload APK
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: apk-result
-          path: ./project/build/app/outputs/flutter-apk/*.apk
+          name: apk-build
+          path: ${{ env.PROJECT_ROOT }}/build/app/outputs/flutter-apk/*.apk
