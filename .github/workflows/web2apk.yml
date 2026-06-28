@@ -4,34 +4,100 @@ on:
   workflow_dispatch:
     inputs:
       web_url:
+        description: 'Website URL'
         required: true
       app_name:
+        description: 'App Name'
         required: true
       icon_url:
+        description: 'Icon URL'
         required: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
         with:
-          node-version: 20
+          flutter-version: '3.22.0'
+          channel: 'stable'
 
-      - name: Build Web2APK
+      - name: Create WebView Project
         run: |
-          echo "Web URL: ${{ inputs.web_url }}"
-          echo "App Name: ${{ inputs.app_name }}"
-          # Tambahkan logic web2apk di sini nanti
-          echo "Web2APK build finished"
+          flutter create --project-name web2apk_${{ github.run_id }} temp_project
+          cd temp_project
 
-      - name: Upload Result
+      - name: Download Icon
+        run: |
+          cd temp_project
+          curl -L "${{ github.event.inputs.icon_url }}" -o assets/icon.png
+
+      - name: Generate WebView Code
+        run: |
+          cd temp_project
+          cat > lib/main.dart << 'EOF'
+          import 'package:flutter/material.dart';
+          import 'package:webview_flutter/webview_flutter.dart';
+
+          void main() => runApp(const MyApp());
+
+          class MyApp extends StatelessWidget {
+            const MyApp({super.key});
+
+            @override
+            Widget build(BuildContext context) {
+              return MaterialApp(
+                title: '${{ github.event.inputs.app_name }}',
+                home: const WebViewScreen(),
+              );
+            }
+          }
+
+          class WebViewScreen extends StatefulWidget {
+            const WebViewScreen({super.key});
+
+            @override
+            State<WebViewScreen> createState() => _WebViewScreenState();
+          }
+
+          class _WebViewScreenState extends State<WebViewScreen> {
+            late final WebViewController controller;
+
+            @override
+            void initState() {
+              super.initState();
+              controller = WebViewController()
+                ..setJavaScriptMode(JavaScriptMode.unrestricted)
+                ..loadRequest(Uri.parse('${{ github.event.inputs.web_url }}'));
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                appBar: AppBar(title: Text('${{ github.event.inputs.app_name }}')),
+                body: WebViewWidget(controller: controller),
+              );
+            }
+          }
+          EOF
+
+      - name: Add Dependency
+        run: |
+          cd temp_project
+          sed -i 's/dependencies:/dependencies:\n  webview_flutter: ^4.7.0/' pubspec.yaml
+
+      - name: Build
+        run: |
+          cd temp_project
+          flutter pub get
+          flutter build apk --release
+
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: web2apk-result
-          path: ./*.apk
+          name: apk-build
+          path: temp_project/build/app/outputs/flutter-apk/*.apk
