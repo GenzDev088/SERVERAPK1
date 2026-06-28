@@ -1,268 +1,57 @@
-
-# ═══════════════════════════════════════════════════════════════
-# WORKFLOW 3: ANDROID STUDIO BUILD (android.yml)
-# ═══════════════════════════════════════════════════════════════
-android_workflow = '''name: 🤖 Build Android Studio APK
+name: Build Android Studio APK
 
 on:
   workflow_dispatch:
     inputs:
       zip_url:
-        description: 'URL ZIP file dari GitHub Release'
+        description: 'URL ZIP project Android Studio'
         required: true
-        type: string
       tag:
-        description: 'Tag unik untuk build ini'
+        description: 'Release tag'
         required: true
-        type: string
       build_type:
-        description: 'Tipe build'
+        description: 'Build type: debug atau release'
         required: true
-        type: choice
-        options:
-          - release
-          - debug
         default: 'release'
-
-env:
-  JAVA_VERSION: "17"
-  ANDROID_API: "34"
-  BUILD_TOOLS: "34.0.0"
-  GRADLE_VERSION: "8.5"
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
     
     steps:
-      # ── 1. Checkout ──────────────────────────────────────────
-      - name: 📥 Checkout Repository
-        uses: actions/checkout@v4
-
-      # ── 2. Setup Java ────────────────────────────────────────
-      - name: ☕ Setup Java ${{ env.JAVA_VERSION }}
+      - name: Setup JDK
         uses: actions/setup-java@v4
         with:
+          java-version: '17'
           distribution: 'temurin'
-          java-version: ${{ env.JAVA_VERSION }}
-
-      # ── 3. Setup Android SDK ─────────────────────────────────
-      - name: 🤖 Setup Android SDK
+      
+      - name: Setup Android SDK
         uses: android-actions/setup-android@v3
-
-      - name: 📝 Accept Licenses & Install Tools
+      
+      - name: Install dependencies
         run: |
-          yes | sdkmanager --licenses || true
-          sdkmanager "platforms;android-${{ env.ANDROID_API }}" "build-tools;${{ env.BUILD_TOOLS }}" "cmdline-tools;latest"
-
-      # ── 4. Download ZIP Project ──────────────────────────────
-      - name: 📦 Download Project ZIP
+          sudo apt-get update
+          sudo apt-get install -y unzip zip
+      
+      - name: Download Project ZIP
         run: |
-          echo "🔗 Downloading from: ${{ inputs.zip_url }}"
-          curl -L -o project.zip "${{ inputs.zip_url }}"
-          echo "📊 File size:"
-          ls -lh project.zip
-          echo "🔍 File type:"
-          file project.zip
-
-      # ── 5. Extract ZIP ───────────────────────────────────────
-      - name: 📂 Extract ZIP
+          curl -L -o project.zip "${{ github.event.inputs.zip_url }}"
+          unzip project.zip -d project/
+      
+      - name: Build APK
+        working-directory: ./project
         run: |
-          mkdir -p project
-          unzip -q project.zip -d project/
-          echo "📁 Extracted contents (top 30 files):"
-          find project/ -maxdepth 3 -type f | head -30
-
-      # ── 6. Find Project Root (cari build.gradle) ───────────────
-      - name: 🔍 Find Project Root
-        id: find-root
-        run: |
-          # Cari build.gradle atau build.gradle.kts di root project
-          BUILD_FILE=$(find project/ -maxdepth 2 \( -name "build.gradle" -o -name "build.gradle.kts" \) | grep -v "settings.gradle" | head -1)
-          
-          if [ -z "$BUILD_FILE" ]; then
-            echo "❌ build.gradle tidak ditemukan!"
-            echo "📁 Semua file yang diextract:"
-            find project/ -type f | head -50
-            exit 1
-          fi
-          
-          PROJECT_DIR=$(dirname "$BUILD_FILE")
-          # Naik satu level jika build.gradle ada di app/ folder
-          if [ "$(basename $PROJECT_DIR)" = "app" ]; then
-            PROJECT_DIR=$(dirname "$PROJECT_DIR")
-          fi
-          
-          echo "✅ Project root: $PROJECT_DIR"
-          echo "project_dir=$PROJECT_DIR" >> $GITHUB_OUTPUT
-          
-          # Cek struktur
-          echo "📁 Project structure:"
-          find "$PROJECT_DIR" -maxdepth 2 -type f | head -30
-
-      # ── 7. Setup Gradle Wrapper (jika belum ada) ───────────────
-      - name: ⚙️ Setup Gradle Wrapper
-        working-directory: ${{ steps.find-root.outputs.project_dir }}
-        run: |
-          if [ ! -f "gradlew" ]; then
-            echo "⚠️ gradlew tidak ditemukan, membuat wrapper..."
-            
-            mkdir -p gradle/wrapper
-            
-            cat > gradle/wrapper/gradle-wrapper.properties << EOF
-          distributionBase=GRADLE_USER_HOME
-          distributionPath=wrapper/dists
-          distributionUrl=https\\://services.gradle.org/distributions/gradle-${{ env.GRADLE_VERSION }}-bin.zip
-          networkTimeout=10000
-          validateDistributionUrl=true
-          zipStoreBase=GRADLE_USER_HOME
-          zipStorePath=wrapper/dists
-          EOF
-            
-            # Download wrapper jar
-            curl -L -o gradle/wrapper/gradle-wrapper.jar \
-              "https://raw.githubusercontent.com/gradle/gradle/v${{ env.GRADLE_VERSION }}.0/gradle/wrapper/gradle-wrapper.jar" || \
-            curl -L -o gradle/wrapper/gradle-wrapper.jar \
-              "https://github.com/gradle/gradle/raw/v${{ env.GRADLE_VERSION }}.0/gradle/wrapper/gradle-wrapper.jar"
-            
-            cat > gradlew << 'EOF'
-          #!/bin/sh
-          exec java -cp "gradle/wrapper/gradle-wrapper.jar" org.gradle.wrapper.GradleWrapperMain "$@"
-          EOF
-            chmod +x gradlew
-            
-            echo "✅ Gradle wrapper created"
+          if [ "${{ github.event.inputs.build_type }}" == "debug" ]; then
+            ./gradlew assembleDebug
           else
-            echo "✅ Gradle wrapper sudah ada"
+            ./gradlew assembleRelease
           fi
-          
-          # Cek versi gradle
-          ./gradlew --version || true
-
-      # ── 8. Fix Permissions ─────────────────────────────────────
-      - name: 🔧 Fix Permissions
-        working-directory: ${{ steps.find-root.outputs.project_dir }}
-        run: |
-          chmod +x gradlew 2>/dev/null || true
-          # Fix file permissions
-          find . -type f -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
-
-      # ── 9. Validate Gradle Project ───────────────────────────
-      - name: ✅ Validate Project
-        working-directory: ${{ steps.find-root.outputs.project_dir }}
-        run: |
-          echo "📍 Working directory: $(pwd)"
-          echo "📁 Files in root:"
-          ls -la
-          
-          # Cek build.gradle
-          if [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
-            echo "✅ Root build.gradle ditemukan"
-          else
-            echo "⚠️ Mencari build.gradle..."
-            find . -name "build.gradle" -o -name "build.gradle.kts" | head -5
-          fi
-          
-          # Cek settings.gradle
-          if [ ! -f "settings.gradle" ] && [ ! -f "settings.gradle.kts" ]; then
-            echo "⚠️ settings.gradle tidak ditemukan, membuat..."
-            cat > settings.gradle << 'EOF'
-          pluginManagement {
-              repositories {
-                  google()
-                  mavenCentral()
-                  gradlePluginPortal()
-              }
-          }
-          dependencyResolutionManagement {
-              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-              repositories {
-                  google()
-                  mavenCentral()
-              }
-          }
-          rootProject.name = "AndroidProject"
-          include ':app'
-          EOF
-          fi
-
-      # ── 10. Build APK ────────────────────────────────────────
-      - name: 🔨 Build APK (${{ inputs.build_type }})
-        working-directory: ${{ steps.find-root.outputs.project_dir }}
-        run: |
-          if [ "${{ inputs.build_type }}" == "debug" ]; then
-            echo "🐞 Building DEBUG APK..."
-            ./gradlew assembleDebug --no-daemon --stacktrace
-          else
-            echo "🚀 Building RELEASE APK..."
-            ./gradlew assembleRelease --no-daemon --stacktrace
-          fi
-
-      # ── 11. Verify Output ────────────────────────────────────
-      - name: ✅ Verify APK Output
-        working-directory: ${{ steps.find-root.outputs.project_dir }}
-        run: |
-          echo "📁 Mencari APK..."
-          find . -name "*.apk" -type f 2>/dev/null || true
-          
-          APK_PATH=$(find . -name "*.apk" -type f | head -1)
-          if [ -z "$APK_PATH" ]; then
-            echo "❌ APK tidak ditemukan!"
-            echo "📁 Semua file di build output:"
-            find app/build/ -type f 2>/dev/null | head -50 || true
-            find build/ -type f 2>/dev/null | head -50 || true
-            exit 1
-          fi
-          
-          echo "✅ APK ditemukan: $APK_PATH"
-          echo "📊 Size: $(ls -lh $APK_PATH | awk '{print $5}')"
-          echo "apk_path=$(realpath $APK_PATH)" >> $GITHUB_ENV
-
-      # ── 12. Rename APK ───────────────────────────────────────
-      - name: 🏷️ Rename APK
-        run: |
-          APK_NAME="android-${{ inputs.tag }}-${{ inputs.build_type }}.apk"
-          cp "${{ env.apk_path }}" "$APK_NAME"
-          echo "📦 Output: $APK_NAME"
-          ls -lh "$APK_NAME"
-          echo "final_apk=$APK_NAME" >> $GITHUB_ENV
-
-      # ── 13. Upload Artifact ──────────────────────────────────
-      - name: 📤 Upload APK Artifact
+      
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: android-apk-${{ inputs.tag }}
-          path: ${{ env.final_apk }}
-          retention-days: 7
-          if-no-files-found: error
-
-      # ── 14. Cleanup ──────────────────────────────────────────
-      - name: 🧹 Cleanup
-        if: always()
-        run: rm -rf project/ project.zip
-'''
-
-with open(f"{output_dir}/android.yml", "w") as f:
-    f.write(android_workflow)
-
-print("✅ android.yml created")
-
-# ═══════════════════════════════════════════════════════════════
-# LIST SEMUA FILE YANG DIBUAT
-# ═══════════════════════════════════════════════════════════════
-import os
-
-print("\n" + "="*60)
-print("📁 SEMUA WORKFLOW FILE YANG DIBUAT:")
-print("="*60)
-
-for root, dirs, files in os.walk("/mnt/agents/output"):
-    level = root.replace("/mnt/agents/output", "").count(os.sep)
-    indent = "  " * level
-    print(f"{indent}📂 {os.path.basename(root)}/")
-    subindent = "  " * (level + 1)
-    for file in files:
-        filepath = os.path.join(root, file)
-        size = os.path.getsize(filepath)
-        print(f"{subindent}📄 {file} ({size:,} bytes)")
+          name: apk-build
+          path: |
+            project/app/build/outputs/apk/debug/*.apk
+            project/app/build/outputs/apk/release/*.apk
+          retention-days: 1
