@@ -24,8 +24,8 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.8.1'
-          channel: 'master'   # ✅ FIX: 3.8.1 mungkin belum di stable, coba master
+          flutter-version: '3.27.1'   # ✅ GANTI INI dengan versi Flutter kamu!
+          channel: 'stable'
 
       - name: Download ZIP
         run: |
