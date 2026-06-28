@@ -26,47 +26,75 @@ jobs:
           flutter-version: '3.22.0'
           channel: 'stable'
 
+      - name: Download Icon
+        run: |
+          curl -L -o icon.png "${{ github.event.inputs.icon_url }}"
+          ls -la icon.png
+
       - name: Create WebView Project
         run: |
           flutter create --project-name web2apk_${{ github.run_id }} temp_project
           cd temp_project
+          
+          # Copy icon ke assets
+          mkdir -p assets
+          cp ../icon.png assets/icon.png
 
-      - name: Download Icon
+      - name: Setup WebView Code
         run: |
           cd temp_project
-          curl -L "${{ github.event.inputs.icon_url }}" -o assets/icon.png
-
-      - name: Generate WebView Code
-        run: |
-          cd temp_project
-          cat > lib/main.dart << 'EOF'
+          
+          # Update pubspec.yaml
+          cat > pubspec.yaml << 'EOF'
+          name: web2apk_${{ github.run_id }}
+          description: ${{ github.event.inputs.app_name }}
+          publish_to: 'none'
+          version: 1.0.0+1
+          
+          environment:
+            sdk: '>=3.0.0 <4.0.0'
+          
+          dependencies:
+            flutter:
+              sdk: flutter
+            webview_flutter: ^4.7.0
+          
+          flutter:
+            uses-material-design: true
+            assets:
+              - assets/icon.png
+          EOF
+          
+          # Buat main.dart
+          cat > lib/main.dart << 'DART_EOF'
           import 'package:flutter/material.dart';
           import 'package:webview_flutter/webview_flutter.dart';
-
+          
           void main() => runApp(const MyApp());
-
+          
           class MyApp extends StatelessWidget {
             const MyApp({super.key});
-
+          
             @override
             Widget build(BuildContext context) {
               return MaterialApp(
                 title: '${{ github.event.inputs.app_name }}',
+                debugShowCheckedModeBanner: false,
                 home: const WebViewScreen(),
               );
             }
           }
-
+          
           class WebViewScreen extends StatefulWidget {
             const WebViewScreen({super.key});
-
+          
             @override
             State<WebViewScreen> createState() => _WebViewScreenState();
           }
-
+          
           class _WebViewScreenState extends State<WebViewScreen> {
             late final WebViewController controller;
-
+          
             @override
             void initState() {
               super.initState();
@@ -74,23 +102,21 @@ jobs:
                 ..setJavaScriptMode(JavaScriptMode.unrestricted)
                 ..loadRequest(Uri.parse('${{ github.event.inputs.web_url }}'));
             }
-
+          
             @override
             Widget build(BuildContext context) {
               return Scaffold(
-                appBar: AppBar(title: Text('${{ github.event.inputs.app_name }}')),
+                appBar: AppBar(
+                  title: Text('${{ github.event.inputs.app_name }}'),
+                  backgroundColor: Colors.blue,
+                ),
                 body: WebViewWidget(controller: controller),
               );
             }
           }
-          EOF
+          DART_EOF
 
-      - name: Add Dependency
-        run: |
-          cd temp_project
-          sed -i 's/dependencies:/dependencies:\n  webview_flutter: ^4.7.0/' pubspec.yaml
-
-      - name: Build
+      - name: Build APK
         run: |
           cd temp_project
           flutter pub get
