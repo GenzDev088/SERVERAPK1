@@ -4,54 +4,56 @@ on:
   workflow_dispatch:
     inputs:
       zip_url:
-        description: 'URL ZIP Project'
+        description: 'URL ZIP file'
         required: true
       tag:
-        description: 'Tag Build'
+        description: 'Release tag'
         required: true
       build_type:
-        description: 'Build Type'
+        description: 'Build type'
         required: true
         default: 'release'
-        type: choice
-        options:
-          - debug
-          - release
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Download Project ZIP
-        run: |
-          curl -L -o project.zip "${{ inputs.zip_url }}"
-          unzip -q project.zip -d ./project
-
       - name: Setup JDK
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
           java-version: '17'
+          distribution: 'temurin'
 
-      - name: Grant Permission
-        working-directory: ./project
-        run: chmod +x ./gradlew
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Download ZIP
+        run: |
+          curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "${{ github.event.inputs.zip_url }}" -o project.zip
+
+      - name: Extract & Build
+        run: |
+          unzip project.zip -d project/
+          cd project
+          # Cari build.gradle
+          ROOT_DIR=$(find . -name "build.gradle*" -not -path "*/.*" | head -1 | xargs dirname)
+          echo "PROJECT_ROOT=$ROOT_DIR" >> $GITHUB_ENV
 
       - name: Build APK
-        working-directory: ./project
         run: |
-          if [ "${{ inputs.build_type }}" = "debug" ]; then
-            ./gradlew assembleDebug --stacktrace
+          cd ${{ env.PROJECT_ROOT }}
+          if [ "${{ github.event.inputs.build_type }}" == "debug" ]; then
+            ./gradlew assembleDebug
           else
-            ./gradlew assembleRelease --stacktrace
+            ./gradlew assembleRelease
           fi
 
-      - name: Upload APK
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: apk-result
-          path: ./project/app/build/outputs/apk/**/*.apk
+          name: apk-build
+          path: ${{ env.PROJECT_ROOT }}/app/build/outputs/apk/**/*.apk
