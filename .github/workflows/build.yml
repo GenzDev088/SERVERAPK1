@@ -1,192 +1,57 @@
-
-# Buat semua GitHub Actions workflow files
-
-import os
-
-output_dir = "/mnt/agents/output/.github/workflows"
-os.makedirs(output_dir, exist_ok=True)
-
-# ═══════════════════════════════════════════════════════════════
-# WORKFLOW 1: FLUTTER BUILD (build.yml)
-# ═══════════════════════════════════════════════════════════════
-flutter_workflow = '''name: 🚀 Build Flutter APK
+name: Build Flutter APK
 
 on:
   workflow_dispatch:
     inputs:
       zip_url:
-        description: 'URL ZIP file dari GitHub Release'
+        description: 'URL ZIP project Flutter'
         required: true
-        type: string
       tag:
-        description: 'Tag unik untuk build ini'
+        description: 'Release tag'
         required: true
-        type: string
       build_type:
-        description: 'Tipe build'
+        description: 'Build type: debug atau release'
         required: true
-        type: choice
-        options:
-          - release
-          - debug
         default: 'release'
-
-env:
-  FLUTTER_VERSION: "3.27.0"
-  JAVA_VERSION: "17"
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
     
     steps:
-      # ── 1. Checkout ──────────────────────────────────────────
-      - name: 📥 Checkout Repository
-        uses: actions/checkout@v4
-
-      # ── 2. Setup Java ────────────────────────────────────────
-      - name: ☕ Setup Java ${{ env.JAVA_VERSION }}
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: ${{ env.JAVA_VERSION }}
-
-      # ── 3. Setup Flutter (versi stabil terbaru) ──────────────
-      - name: 🐦 Setup Flutter ${{ env.FLUTTER_VERSION }}
+      # ── Setup Flutter ──
+      - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
+          flutter-version: '3.22.0'    # ← Versi stabil terbaru (ganti sesuai kebutuhan)
           channel: 'stable'
-          cache: true
-
-      # ── 4. Verifikasi Flutter ────────────────────────────────
-      - name: ✅ Verifikasi Flutter
+      
+      - name: Install dependencies
         run: |
-          flutter --version
-          flutter doctor -v
-          dart --version
-
-      # ── 5. Download ZIP Project ──────────────────────────────
-      - name: 📦 Download Project ZIP
+          sudo apt-get update
+          sudo apt-get install -y unzip zip
+      
+      # ── Download ZIP ──
+      - name: Download Project ZIP
         run: |
-          echo "🔗 Downloading from: ${{ inputs.zip_url }}"
-          curl -L -o project.zip "${{ inputs.zip_url }}"
-          echo "📊 File size:"
-          ls -lh project.zip
-          echo "🔍 File type:"
-          file project.zip
-
-      # ── 6. Extract ZIP ───────────────────────────────────────
-      - name: 📂 Extract ZIP
+          curl -L -o project.zip "${{ github.event.inputs.zip_url }}"
+          unzip project.zip -d project/
+      
+      # ── Build APK ──
+      - name: Build APK
+        working-directory: ./project
         run: |
-          mkdir -p project
-          unzip -q project.zip -d project/
-          echo "📁 Extracted contents:"
-          find project/ -maxdepth 2 -type f | head -30
-
-      # ── 7. Find & Navigate ke Project Root ───────────────────
-      - name: 🔍 Find Project Root
-        id: find-root
-        run: |
-          # Cari pubspec.yaml di dalam extracted folder
-          PUBSPEC_PATH=$(find project/ -name "pubspec.yaml" -not -path "*/.*" | head -1)
-          if [ -z "$PUBSPEC_PATH" ]; then
-            echo "❌ pubspec.yaml tidak ditemukan!"
-            echo "📁 Semua file yang diextract:"
-            find project/ -type f | head -50
-            exit 1
-          fi
-          PROJECT_DIR=$(dirname "$PUBSPEC_PATH")
-          echo "✅ Project root ditemukan: $PROJECT_DIR"
-          echo "project_dir=$PROJECT_DIR" >> $GITHUB_OUTPUT
-          
-          # Cek isi pubspec
-          echo "📋 pubspec.yaml:"
-          cat "$PUBSPEC_PATH"
-
-      # ── 8. Setup Android SDK ───────────────────────────────────
-      - name: 🤖 Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      # ── 9. Accept Licenses ───────────────────────────────────
-      - name: 📝 Accept Android Licenses
-        run: |
-          yes | sdkmanager --licenses || true
-          sdkmanager "platforms;android-34" "build-tools;34.0.0" "cmdline-tools;latest"
-
-      # ── 10. Install Dependencies ───────────────────────────────
-      - name: 📦 Install Dependencies
-        working-directory: ${{ steps.find-root.outputs.project_dir }}
-        run: |
-          echo "📍 Working in: $(pwd)"
           flutter pub get
-
-      # ── 11. Analyze (opsional, tidak fail build) ───────────────
-      - name: 🔍 Analyze Code
-        working-directory: ${{ steps.find-root.outputs.project_dir }}
-        continue-on-error: true
-        run: |
-          echo "[RESULT_ANALYZE]"
-          flutter analyze --no-pub --no-congratulations 2>&1 | head -100 || true
-          echo "[END_RESULT_ANALYZE]"
-
-      # ── 12. Build APK ──────────────────────────────────────────
-      - name: 🔨 Build APK (${{ inputs.build_type }})
-        working-directory: ${{ steps.find-root.outputs.project_dir }}
-        run: |
-          if [ "${{ inputs.build_type }}" == "debug" ]; then
-            echo "🐞 Building DEBUG APK..."
-            flutter build apk --debug --verbose
+          if [ "${{ github.event.inputs.build_type }}" == "debug" ]; then
+            flutter build apk --debug
           else
-            echo "🚀 Building RELEASE APK..."
-            flutter build apk --release --verbose
+            flutter build apk --release
           fi
-
-      # ── 13. Verify Output ────────────────────────────────────
-      - name: ✅ Verify APK Output
-        working-directory: ${{ steps.find-root.outputs.project_dir }}
-        run: |
-          echo "📁 Build output directory:"
-          find build/app/outputs/flutter-apk/ -type f -name "*.apk" 2>/dev/null || true
-          
-          APK_PATH=$(find build/app/outputs/flutter-apk/ -name "*.apk" | head -1)
-          if [ -z "$APK_PATH" ]; then
-            echo "❌ APK tidak ditemukan!"
-            echo "📁 Semua file di build output:"
-            find build/ -type f | head -50
-            exit 1
-          fi
-          echo "✅ APK ditemukan: $APK_PATH"
-          echo "📊 Size: $(ls -lh $APK_PATH | awk '{print $5}')"
-          echo "apk_path=$APK_PATH" >> $GITHUB_ENV
-
-      # ── 14. Rename APK dengan Tag ──────────────────────────────
-      - name: 🏷️ Rename APK
-        run: |
-          APK_NAME="app-${{ inputs.tag }}-${{ inputs.build_type }}.apk"
-          cp "${{ env.apk_path }}" "$APK_NAME"
-          echo "📦 Output: $APK_NAME"
-          ls -lh "$APK_NAME"
-          echo "final_apk=$APK_NAME" >> $GITHUB_ENV
-
-      # ── 15. Upload Artifact ────────────────────────────────────
-      - name: 📤 Upload APK Artifact
+      
+      # ── Upload Artifact ──
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: flutter-apk-${{ inputs.tag }}
-          path: ${{ env.final_apk }}
-          retention-days: 7
-          if-no-files-found: error
-
-      # ── 16. Cleanup ────────────────────────────────────────────
-      - name: 🧹 Cleanup
-        if: always()
-        run: |
-          rm -rf project/ project.zip
-'''
-
-with open(f"{output_dir}/build.yml", "w") as f:
-    f.write(flutter_workflow)
-
-print("✅ build.yml created")
+          name: apk-build
+          path: project/build/app/outputs/flutter-apk/app-*.apk
+          retention-days: 1
