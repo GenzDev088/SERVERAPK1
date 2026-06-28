@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       zip_url:
-        description: 'URL ZIP project Flutter'
+        description: 'URL ZIP project Flutter (browser_download_url)'
         required: true
       tag:
         description: 'Release tag'
@@ -19,11 +19,10 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-      # ── Setup Flutter ──
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.22.0'    # ← Versi stabil terbaru (ganti sesuai kebutuhan)
+          flutter-version: '3.22.0'
           channel: 'stable'
       
       - name: Install dependencies
@@ -31,13 +30,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y unzip zip
       
-      # ── Download ZIP ──
+      # ── Download ZIP (gak perlu auth kalau pake browser_download_url) ──
       - name: Download Project ZIP
         run: |
           curl -L -o project.zip "${{ github.event.inputs.zip_url }}"
           unzip project.zip -d project/
       
-      # ── Build APK ──
       - name: Build APK
         working-directory: ./project
         run: |
@@ -48,7 +46,6 @@ jobs:
             flutter build apk --release
           fi
       
-      # ── Upload Artifact ──
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
