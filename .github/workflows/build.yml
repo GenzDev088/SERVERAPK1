@@ -24,8 +24,8 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.8.1'  # ✅ FIX: Sesuaikan dengan pubspec.yaml kamu
-          channel: 'stable'
+          flutter-version: '3.8.1'
+          channel: 'master'   # ✅ FIX: 3.8.1 mungkin belum di stable, coba master
 
       - name: Download ZIP
         run: |
@@ -52,14 +52,12 @@ jobs:
 
       - name: Extract ZIP
         run: |
-          # ✅ FIX: Extract ke project/ dan simpan full path
           unzip -q project.zip -d project/
           cd project
           
           echo "Isi folder setelah extract:"
           ls -la
           
-          # Cari pubspec.yaml
           PUBSPEC=$(find . -name "pubspec.yaml" -not -path "*/.*" | head -1)
           if [ -z "$PUBSPEC" ]; then
             echo "❌ pubspec.yaml tidak ditemukan!"
@@ -69,20 +67,16 @@ jobs:
           
           echo "Found pubspec.yaml at: $PUBSPEC"
           
-          # ✅ FIX: Ambil folder parent dari pubspec.yaml
           ROOT_DIR=$(dirname "$PUBSPEC")
           
-          # Convert ke absolute path
           if [ "$ROOT_DIR" = "." ]; then
             FULL_ROOT="$PWD"
           else
             FULL_ROOT="$PWD/$ROOT_DIR"
           fi
           
-          # ✅ FIX: Export ke GITHUB_ENV
           echo "PROJECT_ROOT=$FULL_ROOT" >> $GITHUB_ENV
           echo "✅ Project root: $FULL_ROOT"
-          echo "✅ Isi project:"
           ls -la "$FULL_ROOT"
 
       - name: Install Dependencies
