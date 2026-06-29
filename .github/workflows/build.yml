@@ -44,14 +44,20 @@ jobs:
 
       - name: Download source ZIP
         if: inputs.build_type != 'web2apk'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "=== Downloading ZIP ==="
-          curl -sL "${{ inputs.zip_url }}" -o source.zip
+          curl -sL -H "Authorization: token $GH_TOKEN" \
+            -H "Accept: application/octet-stream" \
+            "${{ inputs.zip_url }}" -o source.zip
           FILESIZE=$(stat -c%s source.zip)
           echo "Downloaded: ${FILESIZE} bytes"
           MAGIC=$(xxd -l 4 -p source.zip)
           if [ "$MAGIC" != "504b0304" ]; then
-            echo "::error::Invalid ZIP file (magic: $MAGIC, expected 504b0304)"
+            echo "::error::Invalid ZIP file (magic: $MAGIC, expected 504b0304). Size: $FILESIZE bytes"
+            echo "First 200 bytes of file:"
+            xxd -l 200 source.zip
             exit 1
           fi
           echo "ZIP validation passed"
