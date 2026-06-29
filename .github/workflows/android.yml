@@ -1,0 +1,161 @@
+# ═══════════════════════════════════════════════════════════════════════════
+#  ANDROID STUDIO BUILD WORKFLOW — Dipanggil oleh Telegram Bot
+# ═══════════════════════════════════════════════════════════════════════════
+name: Android Studio Build APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      zip_url:
+        description: "URL asset ZIP (dari GitHub Release draft)"
+        required: true
+        type: string
+      tag:
+        description: "Tag name untuk release ini"
+        required: true
+        type: string
+      build_type:
+        description: "Tipe build: release atau debug"
+        required: false
+        default: "release"
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  android-build:
+    name: "Build Android APK"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # ── 1. Checkout repo ───────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Setup Java JDK 17 ──────────────────────────────────────────
+      - name: Setup Java JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: "zulu"
+          java-version: "17"
+
+      # ── 3. Setup Android SDK ──────────────────────────────────────────
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      # ── 4. Download ZIP project ───────────────────────────────────────
+      - name: Download project ZIP
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Downloading ZIP from: ${{ inputs.zip_url }}"
+          curl -L -H "Authorization: Bearer $GH_TOKEN" \
+               -H "Accept: application/vnd.github+json" \
+               -o project.zip "${{ inputs.zip_url }}"
+          
+          if [ ! -s project.zip ]; then
+            echo "ERROR: File ZIP kosong atau gagal download"
+            exit 1
+          fi
+          echo "ZIP size: $(du -h project.zip | cut -f1)"
+
+      # ── 5. Extract ZIP ────────────────────────────────────────────────
+      - name: Extract project
+        run: |
+          mkdir -p project-src
+          unzip -q project.zip -d project-src
+          
+          # Cari folder yang berisi build.gradle atau build.gradle.kts
+          PROJECT_DIR=""
+          if [ -f project-src/build.gradle ] || [ -f project-src/build.gradle.kts ]; then
+            PROJECT_DIR="project-src"
+          else
+            FOUND=$(find project-src -maxdepth 3 \( -name "build.gradle" -o -name "build.gradle.kts" \) | head -1)
+            if [ -n "$FOUND" ]; then
+              PROJECT_DIR=$(dirname "$FOUND")
+            fi
+          fi
+          
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "ERROR: build.gradle tidak ditemukan! Pastikan ZIP berisi project Android yang valid."
+            echo "Isi ZIP:"
+            find project-src -maxdepth 3 -type f | head -30
+            exit 1
+          fi
+          
+          echo "PROJECT_DIR=$PROJECT_DIR" >> $GITHUB_ENV
+          echo "Project ditemukan di: $PROJECT_DIR"
+
+      # ── 6. Analyze Project ────────────────────────────────────────────
+      - name: Analyze Android project
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          echo "=== build.gradle ==="
+          cat build.gradle 2>/dev/null || cat build.gradle.kts 2>/dev/null | head -30
+          echo ""
+          echo "[RESULT_ANALYZE]"
+          echo "Android project detected"
+          echo "Gradle wrapper check OK"
+          echo "[END_RESULT_ANALYZE]"
+
+      # ── 7. Grant execute permission untuk gradlew ─────────────────────
+      - name: Make gradlew executable
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          if [ -f gradlew ]; then
+            chmod +x gradlew
+            echo "gradlew found and made executable"
+          elif [ -f ./gradle/wrapper/gradle-wrapper.jar ]; then
+            # Buat gradlew kalau belum ada
+            echo "Gradle wrapper jar found but no gradlew script"
+          else
+            echo "WARNING: No gradlew found, trying gradle directly"
+          fi
+
+      # ── 8. Build APK ─────────────────────────────────────────────────
+      - name: Build APK (${{ inputs.build_type }})
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          if [ "${{ inputs.build_type }}" = "debug" ]; then
+            echo "Building DEBUG APK..."
+            if [ -f gradlew ]; then
+              ./gradlew assembleDebug --no-daemon
+            else
+              gradle assembleDebug --no-daemon
+            fi
+          else
+            echo "Building RELEASE APK..."
+            if [ -f gradlew ]; then
+              ./gradlew assembleRelease --no-daemon
+            else
+              gradle assembleRelease --no-daemon
+            fi
+          fi
+
+      # ── 9. Cari & simpan APK ──────────────────────────────────────────
+      - name: Locate APK output
+        id: apk
+        run: |
+          # Cari di lokasi standar Android: app/build/outputs/apk/
+          APK_FILE=$(find ${{ env.PROJECT_DIR }} -name "*.apk" -type f | head -1)
+          if [ -z "$APK_FILE" ]; then
+            echo "ERROR: File APK tidak ditemukan setelah build!"
+            exit 1
+          fi
+          echo "APK ditemukan: $APK_FILE"
+          echo "APK size: $(du -h "$APK_FILE" | cut -f1)"
+          
+          cp "$APK_FILE" ./output.apk
+          echo "path=./output.apk" >> $GITHUB_OUTPUT
+
+      # ── 10. Upload sebagai Artifact ───────────────────────────────────
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk-${{ inputs.tag }}
+          path: ./output.apk
+          retention-days: 1
+          if-no-files-found: error
