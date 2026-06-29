@@ -111,24 +111,17 @@ jobs:
         if: steps.btype.outputs.BT == 'flutter'
         run: |
           cd project
-          echo "=== Checking for Icon(FontAwesomeIcons.) usage ==="
-          grep -rn 'Icon(FontAwesomeIcons\.' lib/ > /tmp/fa_fix.txt 2>/dev/null || true
-          COUNT=$(wc -l < /tmp/fa_fix.txt)
-          echo "Found $COUNT occurrences"
-          if [ "$COUNT" -gt 0 ]; then
-            cat /tmp/fa_fix.txt
-            find lib/ -name "*.dart" -exec sed -i 's/Icon(FontAwesomeIcons\./FaIcon(FontAwesomeIcons./g' {} \;
-            grep -rl 'FaIcon(FontAwesomeIcons\.' lib/ | while read f; do
-              if ! grep -q 'font_awesome_flutter/font_awesome_flutter.dart' "$f"; then
-                sed -i '1 i import '"'"'package:font_awesome_flutter/font_awesome_flutter.dart'"'"';' "$f"
-                echo "Added import to $f"
-              fi
-            done
-            echo "=== Patched files ==="
-            grep -rn 'FaIcon(FontAwesomeIcons\.' lib/ | head -10
-          else
-            echo "No Icon(FontAwesomeIcons.) found, code is already compatible"
-          fi
+          echo "=== Step 1: FaIcon(FontAwesomeIcons.xxx) -> Icon(FontAwesomeIcons.xxx) ==="
+          find lib/ -name "*.dart" -exec sed -i "s/FaIcon(FontAwesomeIcons\./Icon(FontAwesomeIcons./g" {} \;
+          echo "=== Step 2: Remaining FaIcon(var) -> Icon(var) ==="
+          find lib/ -name "*.dart" -exec sed -i "s/FaIcon(/Icon(/g" {} \;
+          echo "=== Step 3: FontAwesomeIcons.xxx -> FontAwesomeIcons.xxx.data ==="
+          find lib/ -name "*.dart" -exec sed -i -E "s/(FontAwesomeIcons\.[a-zA-Z_][a-zA-Z0-9_]*)([^a-zA-Z_.])/\\1.data\\2/g" {} \;
+          echo "=== Verification ==="
+          echo "Remaining FaIcon:"
+          grep -rn "FaIcon" lib/ || echo "  none"
+          echo "FontAwesomeIcons usages (sample):"
+          grep -rn "FontAwesomeIcons\." lib/ | head -15
 
       - name: Build APK (Flutter)
         if: steps.btype.outputs.BT == 'flutter'
