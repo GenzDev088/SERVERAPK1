@@ -94,24 +94,10 @@ jobs:
           head -5 pubspec.yaml
           rm -f pubspec.lock
           FA_VER="11.0.0"
-          if grep -q "font_awesome_flutter" pubspec.yaml 2>/dev/null; then
-            echo "font_awesome_flutter found, forcing $FA_VER"
-            if ! grep -q "dependency_overrides:" pubspec.yaml; then
-              printf '\ndependency_overrides:\n  font_awesome_flutter: %s\n' "$FA_VER" >> pubspec.yaml
-            elif ! grep -A 50 "dependency_overrides:" pubspec.yaml | grep -q "font_awesome_flutter"; then
-              sed -i "/dependency_overrides:/a\  font_awesome_flutter: $FA_VER" pubspec.yaml
-            else
-              sed -i 's/font_awesome_flutter: .*/font_awesome_flutter: '"$FA_VER"'/'' pubspec.yaml
-            fi
-            sed -i 's/font_awesome_flutter: .*/font_awesome_flutter: '"$FA_VER"'/'' pubspec.yaml
-          else
-            echo "font_awesome_flutter not in direct deps, adding override as safety net"
-            if ! grep -q "dependency_overrides:" pubspec.yaml; then
-              printf '\ndependency_overrides:\n  font_awesome_flutter: %s\n' "$FA_VER" >> pubspec.yaml
-            else
-              sed -i '/dependency_overrides:/a\  font_awesome_flutter: '"$FA_VER"'\n' pubspec.yaml
-            fi
-          fi
+          echo "Forcing font_awesome_flutter to $FA_VER"
+          sed -i '/^dependency_overrides:/,/^[^ ]/d' pubspec.yaml
+          sed -i '/^  font_awesome_flutter:/d' pubspec.yaml
+          printf '\ndependency_overrides:\n  font_awesome_flutter: "%s"\n' "$FA_VER" >> pubspec.yaml
           echo "=== Final pubspec.yaml tail ==="
           tail -10 pubspec.yaml
 
@@ -126,14 +112,15 @@ jobs:
         run: |
           cd project
           echo "=== Checking for Icon(FontAwesomeIcons.) usage ==="
-          FOUND=$(grep -rn 'Icon(FontAwesomeIcons\.' lib/ 2>/dev/null | head -20)
-          if [ -n "$FOUND" ]; then
-            echo "Found Icon() usage, patching to FaIcon()..."
-            echo "$FOUND"
+          grep -rn 'Icon(FontAwesomeIcons\.' lib/ > /tmp/fa_fix.txt 2>/dev/null || true
+          COUNT=$(wc -l < /tmp/fa_fix.txt)
+          echo "Found $COUNT occurrences"
+          if [ "$COUNT" -gt 0 ]; then
+            cat /tmp/fa_fix.txt
             find lib/ -name "*.dart" -exec sed -i 's/Icon(FontAwesomeIcons\./FaIcon(FontAwesomeIcons./g' {} \;
-            find lib/ -name "*.dart" | while read f; do
-              if grep -q 'FaIcon(FontAwesomeIcons\.' "$f" && ! grep -q "import 'package:font_awesome_flutter/font_awesome_flutter.dart'" "$f"; then
-                sed -i "1s/^/import 'package:font_awesome_flutter\/font_awesome_flutter.dart';\n/" "$f"
+            grep -rl 'FaIcon(FontAwesomeIcons\.' lib/ | while read f; do
+              if ! grep -q 'font_awesome_flutter/font_awesome_flutter.dart' "$f"; then
+                sed -i '1 i import '"'"'package:font_awesome_flutter/font_awesome_flutter.dart'"'"';' "$f"
                 echo "Added import to $f"
               fi
             done
