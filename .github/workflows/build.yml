@@ -135,6 +135,18 @@ jobs:
           echo "Flutter OK"
           echo "[END_RESULT_ANALYZE]"
 
+            - name: Patch incompatible packages
+        run: |
+          cd project
+          if grep -q "font_awesome_flutter" pubspec.yaml; then
+            sed -i 's/font_awesome_flutter: .*/font_awesome_flutter: 10.8.0/' pubspec.yaml
+            echo "Patched font_awesome_flutter to 10.8.0"
+          fi
+          if [ -f pubspec.lock ]; then
+            sed -i '/font_awesome_flutter/,+2d' pubspec.lock
+            echo "Removed font_awesome_flutter from lock file"
+          fi
+
       - name: Flutter pub get
         working-directory: ${{ env.PROJECT_DIR }}
         run: flutter pub get
