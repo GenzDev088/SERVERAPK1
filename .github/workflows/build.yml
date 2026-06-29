@@ -1,0 +1,256 @@
+name: Build APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      zip_url:
+        description: 'ZIP file URL / Web URL (for web2apk)'
+        required: true
+        type: string
+      tag:
+        description: 'Tag / App Name (used as app_name for web2apk)'
+        required: true
+        type: string
+      build_type:
+        description: 'Build type: flutter / android / web2apk'
+        required: true
+        type: string
+      icon_url:
+        description: 'App Icon URL (optional, for web2apk only)'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Detect and normalize build type
+        id: btype
+        run: |
+          RAW="${{ inputs.build_type }}"
+          LOWER=$(echo "$RAW" | tr '[:upper:]' '[:lower:]')
+          if echo "$LOWER" | grep -q "flutter"; then
+            echo "BT=flutter" >> "$GITHUB_OUTPUT"
+          elif echo "$LOWER" | grep -q "android\|gradle\|studio"; then
+            echo "BT=android" >> "$GITHUB_OUTPUT"
+          elif echo "$LOWER" | grep -q "web2apk\|web_to_apk\|webview\|web"; then
+            echo "BT=web2apk" >> "$GITHUB_OUTPUT"
+          else
+            echo "BT=flutter" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Raw build_type: '$RAW'"
+          echo "Normalized to: '${{ steps.btype.outputs.BT }}'"
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: zulu
+          java-version: 17
+
+      - name: Setup Flutter 3.44.4
+        if: steps.btype.outputs.BT == 'flutter'
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.4'
+          channel: stable
+          cache: true
+
+      - name: Download source ZIP
+        if: steps.btype.outputs.BT != 'web2apk'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "=== Downloading ZIP ==="
+          curl -sL -H "Authorization: token $GH_TOKEN" \
+            -H "Accept: application/octet-stream" \
+            "${{ inputs.zip_url }}" -o source.zip
+          FILESIZE=$(stat -c%s source.zip)
+          echo "Downloaded: ${FILESIZE} bytes"
+          MAGIC=$(xxd -l 4 -p source.zip)
+          if [ "$MAGIC" != "504b0304" ]; then
+            echo "::error::Invalid ZIP file (magic: $MAGIC, expected 504b0304). Size: $FILESIZE bytes"
+            echo "First 200 bytes of file:"
+            xxd -l 200 source.zip
+            exit 1
+          fi
+          echo "ZIP validation passed"
+
+      - name: Extract source
+        if: steps.btype.outputs.BT != 'web2apk'
+        run: |
+          unzip -qo source.zip -d project
+          echo "=== Project structure (root) ==="
+          ls -la project/
+
+      - name: Patch incompatible packages
+        if: steps.btype.outputs.BT == 'flutter'
+        run: |
+          cd project
+          echo "=== Checking pubspec.yaml ==="
+          head -5 pubspec.yaml
+          rm -f pubspec.lock
+          FA_VER="11.0.0"
+          if grep -q "font_awesome_flutter" pubspec.yaml 2>/dev/null; then
+            echo "font_awesome_flutter found, forcing $FA_VER"
+            if ! grep -q "dependency_overrides:" pubspec.yaml; then
+              printf '\ndependency_overrides:\n  font_awesome_flutter: %s\n' "$FA_VER" >> pubspec.yaml
+            elif ! grep -A 50 "dependency_overrides:" pubspec.yaml | grep -q "font_awesome_flutter"; then
+              sed -i "/dependency_overrides:/a\  font_awesome_flutter: $FA_VER" pubspec.yaml
+            else
+              sed -i 's/font_awesome_flutter: .*/font_awesome_flutter: '"$FA_VER"'/'' pubspec.yaml
+            fi
+            sed -i 's/font_awesome_flutter: .*/font_awesome_flutter: '"$FA_VER"'/'' pubspec.yaml
+          else
+            echo "font_awesome_flutter not in direct deps, adding override as safety net"
+            if ! grep -q "dependency_overrides:" pubspec.yaml; then
+              printf '\ndependency_overrides:\n  font_awesome_flutter: %s\n' "$FA_VER" >> pubspec.yaml
+            else
+              sed -i '/dependency_overrides:/a\  font_awesome_flutter: '"$FA_VER"'\n' pubspec.yaml
+            fi
+          fi
+          echo "=== Final pubspec.yaml tail ==="
+          tail -10 pubspec.yaml
+
+      - name: Install Flutter dependencies
+        if: steps.btype.outputs.BT == 'flutter'
+        run: |
+          cd project
+          flutter pub get
+
+      - name: Auto-fix code for font_awesome_flutter 11.x
+        if: steps.btype.outputs.BT == 'flutter'
+        run: |
+          cd project
+          echo "=== Checking for Icon(FontAwesomeIcons.) usage ==="
+          FOUND=$(grep -rn 'Icon(FontAwesomeIcons\.' lib/ 2>/dev/null | head -20)
+          if [ -n "$FOUND" ]; then
+            echo "Found Icon() usage, patching to FaIcon()..."
+            echo "$FOUND"
+            find lib/ -name "*.dart" -exec sed -i 's/Icon(FontAwesomeIcons\./FaIcon(FontAwesomeIcons./g' {} \;
+            find lib/ -name "*.dart" | while read f; do
+              if grep -q 'FaIcon(FontAwesomeIcons\.' "$f" && ! grep -q "import 'package:font_awesome_flutter/font_awesome_flutter.dart'" "$f"; then
+                sed -i "1s/^/import 'package:font_awesome_flutter\/font_awesome_flutter.dart';\n/" "$f"
+                echo "Added import to $f"
+              fi
+            done
+            echo "=== Patched files ==="
+            grep -rn 'FaIcon(FontAwesomeIcons\.' lib/ | head -10
+          else
+            echo "No Icon(FontAwesomeIcons.) found, code is already compatible"
+          fi
+
+      - name: Build APK (Flutter)
+        if: steps.btype.outputs.BT == 'flutter'
+        run: |
+          cd project
+          flutter build apk --debug
+
+      - name: Build APK (Android Studio)
+        if: steps.btype.outputs.BT == 'android'
+        run: |
+          cd project
+          chmod +x gradlew 2>/dev/null || true
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Generate Android project (Web2APK)
+        if: steps.btype.outputs.BT == 'web2apk'
+        env:
+          WEB_URL: ${{ inputs.zip_url }}
+          APP_NAME: ${{ inputs.tag }}
+        run: |
+          mkdir -p app/src/main/java/com/web2apk
+          mkdir -p app/src/main/res/values
+          mkdir -p app/src/main/res/mipmap-hdpi
+          mkdir -p app/src/main/res/mipmap-mdpi
+          mkdir -p app/src/main/res/mipmap-xhdpi
+          mkdir -p app/src/main/res/mipmap-xxhdpi
+          mkdir -p app/src/main/res/mipmap-xxxhdpi
+          mkdir -p gradle/wrapper
+          printf 'pluginManagement {\n  repositories {\n    google()\n    mavenCentral()\n    gradlePluginPortal()\n  }\n  }\n  }\ndependencyResolutionManagement {\n  repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)\n  repositories {\n    google()\n    mavenCentral()\n  }\n}\nrootProject.name = "web2apk"\ninclude ":app"\n' > settings.gradle
+          printf 'plugins { id("com.android.application") version "8.2.0" apply false }\n' > build.gradle
+          printf 'android.useAndroidX=true\norg.gradle.jvmargs=-Xmx2048m\n' > gradle.properties
+          printf 'distributionBase=GRADLE_USER_HOME\ndistributionPath=wrapper/dists\ndistributionUrl=https\\://services.gradle.org/distributions/gradle-8.2-bin.zip\nzipStoreBase=GRADLE_USER_HOME\nzipStorePath=wrapper/dists\n' > gradle/wrapper/gradle-wrapper.properties
+          printf 'plugins { id("com.android.application") }\nandroid {\n  namespace "com.web2apk"\n  compileSdk 34\n  defaultConfig {\n    applicationId "com.web2apk"\n    minSdk 21\n    targetSdk 34\n    versionCode 1\n    versionName "1.0"\n  }\n  buildTypes {\n    release {\n      minifyEnabled false\n    }\n  }\n  compileOptions {\n    sourceCompatibility JavaVersion.VERSION_17\n    targetCompatibility JavaVersion.VERSION_17\n  }\n}\ndependencies {\n  implementation("androidx.appcompat:appcompat:1.6.1")\n  implementation("androidx.webkit:webkit:1.8.0")\n}\n' > app/build.gradle
+          printf '<?xml version="1.0" encoding="utf-8"?>\n<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n  <uses-permission android:name="android.permission.INTERNET" />\n  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />\n  <application\n    android:allowBackup="true"\n    android:icon="@mipmap/ic_launcher"\n    android:label="@string/app_name"\n    android:roundIcon="@mipmap/ic_launcher"\n    android:supportsRtl="true"\n    android:theme="@style/AppTheme"\n    android:usesCleartextTraffic="true">\n    <activity\n      android:name=".MainActivity"\n      android:exported="true"\n      android:configChanges="orientation|screenSize|keyboardHidden">\n      <intent-filter>\n        <action android:name="android.intent.action.MAIN" />\n        <category android:name="android.intent.category.LAUNCHER" />\n      </intent-filter>\n    </activity>\n  </application>\n</manifest>\n' > app/src/main/AndroidManifest.xml
+          printf 'package com.web2apk;\nimport android.app.Activity;\nimport android.os.Bundle;\nimport android.view.Window;\nimport android.view.WindowManager;\nimport android.webkit.WebSettings;\nimport android.webkit.WebView;\nimport android.webkit.WebChromeClient;\nimport android.webkit.GeolocationPermissions;\npublic class MainActivity extends Activity {\n  private WebView webView;\n  @Override\n  protected void onCreate(Bundle savedInstanceState) {\n    super.onCreate(savedInstanceState);\n    requestWindowFeature(Window.FEATURE_NO_TITLE);\n    getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN);\n    webView = new WebView(this);\n    setContentView(webView);\n    WebSettings s = webView.getSettings();\n    s.setJavaScriptEnabled(true);\n    s.setDomStorageEnabled(true);\n    s.setAllowFileAccess(true);\n    s.setGeolocationEnabled(true);\n    s.setBuiltInZoomControls(false);\n    s.setUseWideViewPort(true);\n    s.setLoadWithOverviewMode(true);\n    s.setCacheMode(WebSettings.LOAD_DEFAULT);\n    s.setMediaPlaybackRequiresUserGesture(false);\n    webView.setWebViewClient(new android.webkit.WebViewClient());\n    webView.setWebChromeClient(new WebChromeClient() {\n      @Override\n      public void onGeolocationPermissionsShowPrompt(String origin, GeolocationPermissions.Callback cb) {\n        cb.invoke(origin, true, false);\n      }\n    });\n    webView.loadUrl("%s");\n  }\n  @Override\n  public void onBackPressed() {\n    if (webView != null && webView.canGoBack()) {\n      webView.goBack();\n    } else {\n      super.onBackPressed();\n    }\n  }\n}\n' "$WEB_URL" > app/src/main/java/com/web2apk/MainActivity.java
+          printf '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n  <string name="app_name">%s</string>\n</resources>\n' "$APP_NAME" > app/src/main/res/values/strings.xml
+          printf '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n  <color name="colorPrimary">#1976D2</color>\n  <color name="colorPrimaryDark">#1565C0</color>\n  <color name="colorAccent">#FF5722</color>\n</resources>\n' > app/src/main/res/values/colors.xml
+          printf '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n  <style name="AppTheme" parent="android:Theme.Material.Light.NoActionBar">\n    <item name="android:colorPrimary">@color/colorPrimary</item>\n    <item name="android:colorPrimaryDark">@color/colorPrimaryDark</item>\n    <item name="android:colorAccent">@color/colorAccent</item>\n    <item name="android:statusBarColor">@color/colorPrimaryDark</item>\n  </style>\n</resources>\n' > app/src/main/res/values/styles.xml
+          touch app/proguard-rules.pro
+          echo "=== Project generated ==="
+          find . -type f | head -20
+
+      - name: Setup Gradle wrapper (Web2APK)
+        if: steps.btype.outputs.BT == 'web2apk'
+        run: |
+          GRADLE_VER="8.2"
+          curl -sL "https://services.gradle.org/distributions/gradle-${GRADLE_VER}-bin.zip" -o /tmp/gradle.zip
+          unzip -qo /tmp/gradle.zip -d /tmp/
+          /tmp/gradle-${GRADLE_VER}/bin/gradle wrapper --gradle-version ${GRADLE_VER}
+          chmod +x gradlew
+          echo "Gradle wrapper ready"
+
+      - name: Handle app icon (Web2APK)
+        if: steps.btype.outputs.BT == 'web2apk'
+        run: |
+          ICON_URL="${{ inputs.icon_url }}"
+          if [ -n "$ICON_URL" ]; then
+            curl -sL "$ICON_URL" -o /tmp/icon.png
+            FSIZE=$(stat -c%s /tmp/icon.png 2>/dev/null || echo "0")
+            if [ "$FSIZE" -gt 100 ]; then
+              convert /tmp/icon.png -resize 48x48 app/src/main/res/mipmap-mdpi/ic_launcher.png
+              convert /tmp/icon.png -resize 72x72 app/src/main/res/mipmap-hdpi/ic_launcher.png
+              convert /tmp/icon.png -resize 96x96 app/src/main/res/mipmap-xhdpi/ic_launcher.png
+              convert /tmp/icon.png -resize 144x144 app/src/main/res/mipmap-xxhdpi/ic_launcher.png
+              convert /tmp/icon.png -resize 192x192 app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+              echo "Custom icon applied"
+            else
+              echo "Icon download failed, generating default"
+              convert -size 192x192 xc:'#1976D2' -gravity center -pointsize 72 -fill white -annotate 0 "${{ inputs.tag }}" app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+              convert app/src/main/res/mipmap-xxxhdpi/ic_launcher.png -resize 48x48 app/src/main/res/mipmap-mdpi/ic_launcher.png
+              convert app/src/main/res/mipmap-xxxhdpi/ic_launcher.png -resize 72x72 app/src/main/res/mipmap-hdpi/ic_launcher.png
+              convert app/src/main/res/mipmap-xxxhdpi/ic_launcher.png -resize 96x96 app/src/main/res/mipmap-xhdpi/ic_launcher.png
+              convert app/src/main/res/mipmap-xxxhdpi/ic_launcher.png -resize 144x144 app/src/main/res/mipmap-xxhdpi/ic_launcher.png
+            fi
+          else
+            echo "No icon URL, generating default icon"
+            convert -size 192x192 xc:'#1976D2' -gravity center -pointsize 72 -fill white -annotate 0 "${{ inputs.tag }}" app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+            convert app/src/main/res/mipmap-xxxhdpi/ic_launcher.png -resize 48x48 app/src/main/res/mipmap-mdpi/ic_launcher.png
+            convert app/src/main/res/mipmap-xxxhdpi/ic_launcher.png -resize 72x72 app/src/main/res/mipmap-hdpi/ic_launcher.png
+            convert app/src/main/res/mipmap-xxxhdpi/ic_launcher.png -resize 96x96 app/src/main/res/mipmap-xhdpi/ic_launcher.png
+            convert app/src/main/res/mipmap-xxxhdpi/ic_launcher.png -resize 144x144 app/src/main/res/mipmap-xxhdpi/ic_launcher.png
+          fi
+          echo "Icon setup done"
+
+      - name: Build APK (Web2APK)
+        if: steps.btype.outputs.BT == 'web2apk'
+        run: |
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Find APK output
+        id: findapk
+        run: |
+          echo "=== Searching for APK files ==="
+          APK_PATH=$(find . -name "*.apk" -path "*/outputs/*" 2>/dev/null | head -1)
+          if [ -z "$APK_PATH" ]; then
+            echo "=== Listing all build output dirs ==="
+            find . -type d -name "outputs" 2>/dev/null
+            echo "=== Listing all .apk anywhere ==="
+            find . -name "*.apk" 2>/dev/null
+            echo "::error::No APK found in build outputs"
+            exit 1
+          fi
+          APK_SIZE=$(stat -c%s "$APK_PATH")
+          echo "APK found: $APK_PATH (${APK_SIZE} bytes)"
+          echo "APK_PATH=$APK_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-output
+          path: ${{ steps.findapk.outputs.APK_PATH }}
+          retention-days: 1
