@@ -55,14 +55,113 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Downloading ZIP from: ${{ inputs.zip_url }}"
-          curl -L -H "Authorization: Bearer $GH_TOKEN" \
-               -H "Accept: application/vnd.github+json" \
-               -o project.zip "${{ inputs.zip_url }}"
+          ZIP_URL="${{ inputs.zip_url }}"
+          echo "Original URL: $ZIP_URL"
           
-          # Validasi ZIP
-          if [ ! -s project.zip ]; then
-            echo "ERROR: File ZIP kosong atau gagal download"
+          # ═══════════════════════════════════════════════════════════════
+          # FIX: Draft release tidak bisa didownload via browser URL.
+          # Kalau URL = browser_download_url (github.com/.../releases/download/...),
+          # konversi ke API URL (api.github.com/repos/.../releases/assets/{id})
+          # lalu download dengan Accept: application/octet-stream
+          # ═══════════════════════════════════════════════════════════════
+          
+          if echo "$ZIP_URL" | grep -q "api.github.com"; then
+            # Sudah API URL — langsung download dengan octet-stream
+            echo "Detected API URL, downloading with octet-stream header..."
+            curl -L --fail -H "Authorization: Bearer $GH_TOKEN" \
+                 -H "Accept: application/octet-stream" \
+                 -o project.zip "$ZIP_URL"
+          elif echo "$ZIP_URL" | grep -q "github.com.*releases/download"; then
+            # Browser download URL — konversi ke API URL
+            echo "Detected browser download URL, converting to API URL..."
+            
+            # Extract: OWNER, REPO, ASSET_FILENAME from URL
+            # URL format: https://github.com/OWNER/REPO/releases/download/TAG/FILENAME
+            ASSET_FILE=$(basename "$ZIP_URL")
+            # Extract owner/repo from URL
+            REPO_PATH=$(echo "$ZIP_URL" | sed 's|https://github.com/||' | cut -d'/' -f1,2)
+            
+            echo "Repo: $REPO_PATH"
+            echo "Asset filename: $ASSET_FILE"
+            
+            # Cari asset ID via API
+            TAG_FROM_URL=$(echo "$ZIP_URL" | sed 's|.*/releases/download/||' | sed "s|/$ASSET_FILE||")
+            echo "Tag from URL: $TAG_FROM_URL"
+            
+            # Ambil release ID dari tag
+            RELEASE_DATA=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+                               -H "Accept: application/vnd.github+json" \
+                               "https://api.github.com/repos/${REPO_PATH}/releases/tags/${TAG_FROM_URL}")
+            
+            # Kalau tag release langsung tidak ketemu (untagged), cari via release list
+            if echo "$RELEASE_DATA" | grep -q "Not Found"; then
+              echo "Tag not found directly, searching in recent releases..."
+              RELEASE_DATA=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+                                 -H "Accept: application/vnd.github+json" \
+                                 "https://api.github.com/repos/${REPO_PATH}/releases" | \
+                            python3 -c "
+import sys, json
+releases = json.load(sys.stdin)
+for r in releases:
+    for a in r.get('assets', []):
+        if a.get('name') == '${ASSET_FILE}':
+                    print(json.dumps({'asset_id': a['id'], 'release_id': r['id']}))
+                    sys.exit(0)
+print(json.dumps({'error': 'asset not found'}))
+" 2>/dev/null || echo '{"error": "parse failed"}')
+            else
+              ASSET_ID=$(echo "$RELEASE_DATA" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+for a in data.get('assets', []):
+    if a.get('name') == '${ASSET_FILE}':
+        print(a['id'])
+        break
+" 2>/dev/null)
+              if [ -n "$ASSET_ID" ]; then
+                RELEASE_DATA="{\"asset_id\": $ASSET_ID}"
+              fi
+            fi
+            
+            ASSET_ID=$(echo "$RELEASE_DATA" | python3 -c "import sys,json; print(json.load(sys.stdin).get('asset_id',''))" 2>/dev/null)
+            
+            if [ -z "$ASSET_ID" ] || [ "$ASSET_ID" = "None" ]; then
+              echo "ERROR: Tidak bisa menemukan asset ID untuk $ASSET_FILE"
+              echo "Response: $RELEASE_DATA"
+              exit 1
+            fi
+            
+            API_URL="https://api.github.com/repos/${REPO_PATH}/releases/assets/${ASSET_ID}"
+            echo "Resolved API URL: $API_URL"
+            
+            curl -L --fail -H "Authorization: Bearer $GH_TOKEN" \
+                 -H "Accept: application/octet-stream" \
+                 -o project.zip "$API_URL"
+          else
+            # URL lain (misal external) — langsung download
+            echo "Detected external URL, downloading directly..."
+            curl -L --fail -o project.zip "$ZIP_URL"
+          fi
+          
+          # ═══ Validasi download ═══
+          FILE_SIZE=$(stat -c%s project.zip 2>/dev/null || stat -f%z project.zip 2>/dev/null || echo 0)
+          echo "Downloaded file size: $FILE_SIZE bytes"
+          
+          if [ "$FILE_SIZE" -lt 100 ]; then
+            echo "ERROR: File terlalu kecil ($FILE_SIZE bytes) — bukan ZIP yang valid!"
+            echo "Isi file:"
+            xxd project.zip | head -5
+            echo ""
+            cat project.zip
+            exit 1
+          fi
+          
+          # Validasi ZIP header (PK magic bytes: 50 4B 03 04)
+          MAGIC=$(xxd -l 4 -p project.zip 2>/dev/null)
+          if [ "$MAGIC" != "504b0304" ]; then
+            echo "ERROR: File bukan ZIP valid! Magic bytes: $MAGIC (expected: 504b0304)"
+            echo "File terdownload kemungkinan halaman HTML, bukan file asli."
+            echo "Cek: apakah release ini draft? Draft release tidak bisa didownload via browser URL."
             exit 1
           fi
           
@@ -72,15 +171,15 @@ jobs:
       - name: Extract project
         run: |
           mkdir -p project-src
-          unzip -q project.zip -d project-src
+          unzip -qo project.zip -d project-src
           
           # Cari folder yang berisi pubspec.yaml (handle nested ZIP)
           PROJECT_DIR=""
           if [ -f project-src/pubspec.yaml ]; then
             PROJECT_DIR="project-src"
           else
-            # Cari di subfolder
-            FOUND=$(find project-src -name "pubspec.yaml" -maxdepth 3 | head -1)
+            # Cari di subfolder (maxdepth 5 biar lebih dalam)
+            FOUND=$(find project-src -name "pubspec.yaml" -maxdepth 5 | head -1)
             if [ -n "$FOUND" ]; then
               PROJECT_DIR=$(dirname "$FOUND")
             fi
